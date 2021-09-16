@@ -1,0 +1,111 @@
+version: '3'
+
+volumes:
+    prometheus_data: {}
+    grafana_data: {}
+
+services:
+  globo-subscription-app:
+    image: 'globo-subscription-app:latest'
+    build:
+      context: subscription-app
+    container_name: globo-subscription-app
+    depends_on:
+      - postgres
+      - rabbitmq
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/subscription-app
+      - SPRING_DATASOURCE_USERNAME=subscription-app
+      - SPRING_DATASOURCE_PASSWORD=subscription-app
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=update
+      - SPRING_RABBITMQ_HOST=rabbitmq
+    ports:
+      - 80:8080
+          
+  postgres:
+    image: 'postgres:13.1-alpine'
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=subscription-app
+      - POSTGRES_PASSWORD=subscription-app
+    ports:
+      - 5432:5432
+  
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: 'rabbitmq'
+    ports:
+        - 5672:5672
+        - 15672:15672
+
+  request-app:
+    image: 'request-app:latest'
+    build:
+      context: request-app
+    container_name: request-app
+    depends_on:
+      - globo-subscription-app
+
+  prometheus:
+    image: prom/prometheus:v2.2.0-rc.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus/:/etc/prometheus/
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention=200h'
+      - '--web.enable-lifecycle'
+    # restart: unless-stopped
+    ports:
+      - 9090:9090
+  
+  nodeexporter:
+    image: prom/node-exporter:latest
+    container_name: nodeexporter
+    user: root
+    privileged: true
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    restart: unless-stopped
+    ports:
+      - 9100:9100
+
+  cadvisor:
+    image: google/cadvisor:latest
+    container_name: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      #- /cgroup:/cgroup:ro #doesn't work on MacOS only for Linux
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+
+  grafana:
+    image: grafana/grafana:5.2.4
+    container_name: grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/datasources:/etc/grafana/datasources
+      - ./grafana/dashboards:/etc/grafana/dashboards
+      - ./grafana/setup.sh:/setup.sh
+    entrypoint: /setup.sh
+    environment:
+      - GF_SECURITY_ADMIN_USER=${ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    restart: unless-stopped
+    ports:
+      - 3000:3000
